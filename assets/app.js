@@ -34,12 +34,155 @@ const missedStore = {
   mark(id, wrong){ const s = this.all(); wrong ? s.add(id) : s.delete(id); store.set('apw.missed', [...s]); }
 };
 
+/* ---------- Blooket export ----------
+   Turns the questions picked in the quiz setup into Blooket's spreadsheet
+   import format: a title row, a header row, then one question per row with up
+   to four answers, a time limit, and the number of the correct answer.
+   Blooket only has multiple choice in this format, so typed questions get
+   three wrong answers borrowed from other typed answers in the same section
+   (then the same chapter). */
+const BLOOKET_HEAD = ['Question #', 'Question Text', 'Answer 1', 'Answer 2', 'Answer 3 \n(Optional)', 'Answer 4 \n(Optional)', 'Time Limit (sec) \n(Max: 300 Seconds)', 'Correct Answer(s) \n(Only Include Answer #)'];
+const JSZIP_URL = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
+const JSZIP_SRI = 'sha384-+mbV2IY1Zk/X1p/nWllGySJSUN8uMs+gUAN10Or95UBH0fpj6GfKgPmgC5EXieXG';
+
+function blooketRows(items, all, seconds){
+  const typedPool = all.filter(q => q.type !== 'mc');
+  return items.map((q, i) => {
+    let wrong = q.wrong;
+    if (q.type !== 'mc') {
+      // Prefer answers to questions of the same kind ("Who..." answers are people),
+      // then the same section, then anything else in the chapter.
+      const taken = new Set([norm(q.answer)]), picks = [];
+      const kind = x => norm(x.q).split(' ')[0];
+      const rank = o => (kind(o) === kind(q) ? 0 : 2) + (o.section === q.section ? 0 : 1);
+      const cands = shuffle(typedPool.filter(o => o._ch === q._ch && o !== q)).sort((a, b) => rank(a) - rank(b));
+      for (const o of cands) {
+        const k = norm(o.answer);
+        if (taken.has(k)) continue;
+        taken.add(k); picks.push(o.answer);
+        if (picks.length === 3) break;
+      }
+      wrong = picks;
+    }
+    const answers = shuffle([q.answer, ...wrong]);
+    while (answers.length < 4) answers.push('');
+    return [i + 1, q.q, ...answers, seconds, answers.indexOf(q.answer) + 1];
+  });
+}
+function csvCell(v){ const s = String(v); return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }
+function blooketCSV(rows){
+  const lines = [['Blooket\nImport Template', '', '', '', '', '', '', ''], BLOOKET_HEAD, ...rows];
+  return lines.map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
+}
+function saveFile(name, blob){
+  const url = URL.createObjectURL(blob);
+  const a = el('a', {href: url, download: name});
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+function loadJSZip(){
+  if (window.JSZip) return Promise.resolve(window.JSZip);
+  return new Promise((ok, fail) => {
+    const s = el('script', {src: JSZIP_URL, integrity: JSZIP_SRI, crossorigin: 'anonymous'});
+    s.onload = () => ok(window.JSZip); s.onerror = () => fail(new Error('Could not load the spreadsheet library.'));
+    document.head.append(s);
+  });
+}
+const xmlEsc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+/* Fill a copy of Blooket's own Excel template (kept in assets/) so the logo and formatting survive. */
+async function blooketXLSX(rows){
+  const JSZip = await loadJSZip();
+  const res = await fetch('assets/blooket-template.xlsx');
+  if (!res.ok) throw new Error('Could not load the Blooket template.');
+  const zip = await JSZip.loadAsync(await res.arrayBuffer());
+  const path = 'xl/worksheets/sheet1.xml';
+  let xml = await zip.file(path).async('string');
+  const STYLE = ['11', '12', '12', '12', '12', '12', '14', '14'];
+  const cell = (ref, s, v) => v === '' ? `<c r="${ref}" s="${s}"/>`
+    : typeof v === 'number' ? `<c r="${ref}" s="${s}"><v>${v}</v></c>`
+    : `<c r="${ref}" s="${s}" t="inlineStr"><is><t xml:space="preserve">${xmlEsc(v)}</t></is></c>`;
+  const rowXml = (r, vals) => `<row r="${r}" spans="1:12">` + vals.map((v, k) => cell('ABCDEFGH'[k] + r, STYLE[k], v)).join('')
+    + `<c r="I${r}" s="4"/><c r="J${r}" s="4"/><c r="K${r}" s="4"/><c r="L${r}" s="5"/></row>`;
+  const mine = new Map(rows.map((vals, i) => [i + 3, rowXml(i + 3, vals)]));
+  let last = 0;
+  xml = xml.replace(/<sheetData>([\s\S]*)<\/sheetData>/, (_, body) => {
+    const kept = [];
+    body.replace(/<row r="(\d+)"[^>]*?(?:\/>|>[\s\S]*?<\/row>)/g, (m, r) => {
+      r = Number(r); last = Math.max(last, r);
+      kept.push(mine.has(r) ? mine.get(r) : m); mine.delete(r); return '';
+    });
+    mine.forEach(x => kept.push(x));
+    return '<sheetData>' + kept.join('') + '</sheetData>';
+  });
+  xml = xml.replace(/<dimension ref="[^"]*"\/>/, `<dimension ref="A1:L${Math.max(last, rows.length + 2)}"/>`);
+  zip.file(path, xml);
+  return zip.generateAsync({type: 'blob', compression: 'DEFLATE', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+}
+async function copyText(text){
+  try { await navigator.clipboard.writeText(text); return true; }
+  catch (e) {
+    const t = el('textarea', {style: 'position:fixed;opacity:0'}); t.value = text; document.body.append(t); t.select();
+    let ok = false; try { ok = document.execCommand('copy'); } catch (e2) {} t.remove(); return ok;
+  }
+}
+function initBlooket(opts, pool){
+  const setup = $('#q-setup'); if (!setup) return null;
+  const box = el('details', {class: 'export'});
+  const sum = el('summary', {}, 'Export to Blooket');
+  const intro = el('p', {}, 'Turn the topics you picked above into a Blooket question set. Typed-answer questions are included only if "Include typed answers" is checked; they become multiple choice, using other answers from the chapter as the wrong choices.');
+  const timeLab = el('label', {}, 'Time per question ');
+  const time = el('select', {id: 'bk-time'});
+  [10, 20, 30, 45, 60, 90].forEach(s => { const o = el('option', {value: s}, s + ' seconds'); if (s === 20) o.selected = true; time.append(o); });
+  timeLab.append(time);
+  const row = el('div', {class: 'row'});
+  const bCSV = el('button', {type: 'button', class: 'btn small'}, 'Download CSV for Blooket');
+  const bXLSX = el('button', {type: 'button', class: 'btn ghost small'}, 'Download Excel template');
+  const bCopy = el('button', {type: 'button', class: 'btn ghost small'}, 'Copy rows');
+  row.append(bCSV, bXLSX, bCopy);
+  const status = el('p', {class: 'note', 'aria-live': 'polite'});
+  const steps = el('ol', {class: 'formula note'});
+  ['In Blooket, choose Create a set, then CSV Import (or Spreadsheet Import on a set you are editing).',
+   'Upload the CSV you downloaded here. Check the questions, then save the set.',
+   'Want to edit first? Open the Excel template, make changes, then save or download it as .csv and upload that. To use your own copy of the template instead, choose Copy rows and paste into cell A3.'
+  ].forEach(t => steps.append(el('li', {}, t)));
+  const timeRow = el('div', {class: 'row'}); timeRow.append(timeLab);
+  box.append(sum, intro, timeRow, row, status, steps);
+  setup.append(box);
+
+  const base = opts.exportName || 'apworld';
+  const rows = () => {
+    const items = pool();
+    return blooketRows(items, opts.questions, Number(time.value));
+  };
+  const say = t => { status.textContent = t; };
+  const empty = () => { say('Pick at least one topic first.'); };
+  bCSV.addEventListener('click', () => {
+    const r = rows(); if (!r.length) return empty();
+    saveFile(base + '-blooket.csv', new Blob([blooketCSV(r)], {type: 'text/csv;charset=utf-8'}));
+    say('Downloaded ' + base + '-blooket.csv with ' + r.length + ' questions.');
+  });
+  bXLSX.addEventListener('click', async () => {
+    const r = rows(); if (!r.length) return empty();
+    bXLSX.disabled = true; say('Building the spreadsheet…');
+    try { saveFile(base + '-blooket.xlsx', await blooketXLSX(r)); say('Downloaded ' + base + '-blooket.xlsx with ' + r.length + ' questions. Save it as .csv before uploading to Blooket.'); }
+    catch (e) { say(e.message + ' Use the CSV download instead.'); }
+    finally { bXLSX.disabled = false; }
+  });
+  bCopy.addEventListener('click', async () => {
+    const r = rows(); if (!r.length) return empty();
+    const ok = await copyText(r.map(x => x.join('\t')).join('\n'));
+    say(ok ? 'Copied ' + r.length + ' rows. Paste them into cell A3 of the Blooket template.' : 'Your browser blocked copying. Use a download instead.');
+  });
+  return { update(n){ [bCSV, bXLSX, bCopy].forEach(b => b.disabled = n === 0); say(''); } };
+}
+
 /* ---------- quiz ---------- */
 /* opts.questions: [{...q, _id, _ch}]
    opts.groups:    [{name, chips:[{value, label}]}]  (name may be empty)
    opts.chipOf(q): chip value a question belongs to
    opts.topicOf(q): {label, href} used for the "review" links
-   opts.bestKey:   storage key for the best score */
+   opts.bestKey:   storage key for the best score
+   opts.exportName: file name prefix for Blooket exports */
 function initQuiz(opts){
   const vSetup = $('#q-setup'), vPlay = $('#q-play'), vDone = $('#q-done');
   if (!vSetup) return;
@@ -83,7 +226,9 @@ function initQuiz(opts){
     startBtn.disabled = n === 0;
     missBtn.textContent = 'Practice missed (' + m + ')';
     missBtn.hidden = m === 0;
+    if (exporter) exporter.update(n);
   }
+  const exporter = initBlooket(opts, poolFromSetup);
   updatePool();
   function showBest(){ const b = store.get(opts.bestKey, null); $('#q-best').textContent = b === null ? '' : 'Your best score so far: ' + b + '%'; }
   showBest();
@@ -350,7 +495,8 @@ function initChapter(ch){
     groups: [{name: '', chips: data.topics.map(([key, label]) => ({value: key, label}))}],
     chipOf: q => q.section,
     topicOf: q => { const t = topicByKey.get(q.section); return {label: t[1], href: '#' + t[2]}; },
-    bestKey: ch + '.best'
+    bestKey: ch + '.best',
+    exportName: 'apworld-' + ch
   });
 }
 
@@ -385,7 +531,8 @@ function initHub(){
     questions, groups,
     chipOf: q => q._ch + '|' + q.section,
     topicOf: q => topicMap.get(q._ch + '|' + q.section),
-    bestKey: 'hub.best'
+    bestKey: 'hub.best',
+    exportName: 'apworld-cumulative'
   });
 }
 

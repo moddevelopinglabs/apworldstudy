@@ -179,6 +179,14 @@ select{font:inherit;padding:.4rem .5rem;border-radius:6px;border:1px solid var(-
 .missed .a{color:var(--good);font-weight:600}
 [hidden]{display:none!important}
 
+/* Blooket export, inside the quiz setup */
+details.export{margin-top:1.25rem;padding-top:1rem;border-top:1px solid var(--rule)}
+details.export>summary{cursor:pointer;font-weight:600;width:max-content;max-width:100%}
+details.export[open]>summary{margin-bottom:.6rem}
+details.export>p{margin:.5rem 0;font-size:.92rem}
+details.export .row{margin:.6rem 0}
+details.export ol{margin:.75rem 0 0;font-size:.85rem}
+
 @media (max-width:900px){
   .layout{display:block}
   .sidebar{position:sticky;top:0;z-index:5;height:auto;max-height:100vh;border-right:0;border-bottom:1px solid var(--rule);background:var(--paper);padding:.6rem 1rem}

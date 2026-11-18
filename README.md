@@ -15,6 +15,11 @@ Each chapter has section summaries with key points and margin questions, compari
 - `assets/site.css`: shared styles, including light and dark themes
 - `assets/app.js`: shared behavior (progress tracking, flashcards, quizzes, theme toggle)
 - `assets/chN-data.js`: each chapter's quiz questions, key terms, and quiz topics
+- `assets/blooket-template.xlsx`: Blooket's spreadsheet import template, filled in by the "Export to Blooket" option in each quiz
+
+## Exporting to Blooket
+
+Every quiz (each chapter and the cumulative one on the hub) has an "Export to Blooket" panel. It uses the topics picked in the quiz setup and offers a CSV ready to upload with Blooket's CSV Import, a filled copy of the Excel template for editing first, or tab-separated rows to paste into cell A3 of the template. Typed-answer questions become multiple choice, with wrong answers taken from other answers in the same chapter. The Excel download loads JSZip from jsDelivr, so it needs an internet connection.
 
 Progress, written answers, flashcard progress, missed questions, and best scores are saved in the browser's localStorage only.
 
